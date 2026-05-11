@@ -155,6 +155,24 @@ public class ExtractorConfig {
     }
 
     /**
+     * Returns a new config with optional per-service connection overrides applied.
+     * Any null/blank parameter falls back to this instance's current value.
+     */
+    public ExtractorConfig withConnection(String newServicePath, String newBaseUrl,
+                                          String newUser, String newPassword,
+                                          String newClient, String newPreferHeader) {
+        String svc = (newServicePath == null || newServicePath.isBlank()) ? this.servicePath : newServicePath;
+        return new ExtractorConfig(
+                (newBaseUrl == null || newBaseUrl.isBlank()) ? this.baseUrl : newBaseUrl,
+                (newUser == null || newUser.isBlank()) ? this.user : newUser,
+                (newPassword == null || newPassword.isBlank()) ? this.password : newPassword,
+                (newClient == null || newClient.isBlank()) ? this.client : newClient,
+                (newPreferHeader == null || newPreferHeader.isBlank()) ? this.preferHeader : newPreferHeader,
+                svc, this.entitySet, this.extractionMode,
+                this.parallelCalls, this.pageSizeOverride, this.servicePaths);
+    }
+
+    /**
      * Returns a new config with the given entity set and extraction mode,
      * keeping all other settings from this instance.
      */

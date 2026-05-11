@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>S/4HANA Generic Extractor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
@@ -11,6 +14,9 @@
 <!-- App Bar -->
 <header class="appbar">
   <div class="appbar-left">
+    <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
     <div class="logo-mark" aria-hidden="true">S4</div>
     <div class="appbar-title">
       <div class="app-name">S/4HANA Generic Extractor</div>
@@ -27,120 +33,155 @@
 
 <!-- Sub bar / breadcrumb -->
 <div class="subbar">
-  <nav class="crumbs"><span>Home</span><span class="crumb-sep">/</span><span class="crumb-current">Extraction Workspace</span></nav>
+  <nav class="crumbs"><span>Home</span><span class="crumb-sep">/</span><span class="crumb-current" id="crumbCurrent">Extract</span></nav>
   <div class="subbar-meta"><span id="serviceMeta"></span></div>
 </div>
 
-<main class="container">
+<div class="layout">
 
-  <!-- KPI Tiles -->
-  <section class="kpi-row" aria-label="Job statistics">
-    <div class="kpi-tile">
-      <div class="kpi-label">Total Jobs</div>
-      <div class="kpi-value" id="kpiTotal">&mdash;</div>
-      <div class="kpi-foot">All-time</div>
-    </div>
-    <div class="kpi-tile kpi-running">
-      <div class="kpi-label">Running</div>
-      <div class="kpi-value" id="kpiRunning">&mdash;</div>
-      <div class="kpi-foot">Active now</div>
-    </div>
-    <div class="kpi-tile kpi-completed">
-      <div class="kpi-label">Completed</div>
-      <div class="kpi-value" id="kpiCompleted">&mdash;</div>
-      <div class="kpi-foot">Successful</div>
-    </div>
-    <div class="kpi-tile kpi-failed">
-      <div class="kpi-label">Failed</div>
-      <div class="kpi-value" id="kpiFailed">&mdash;</div>
-      <div class="kpi-foot">Errors</div>
-    </div>
-  </section>
+  <!-- Side navigation -->
+  <aside class="sidenav" id="sidenav" role="navigation" aria-label="Primary">
+    <button class="sidenav-item sidenav-active" data-tab="extract" type="button">
+      <span class="sidenav-ico" aria-hidden="true">&#x25B6;</span>
+      <span class="sidenav-label">Extract</span>
+    </button>
+    <button class="sidenav-item" data-tab="history" type="button">
+      <span class="sidenav-ico" aria-hidden="true">&#x231A;</span>
+      <span class="sidenav-label">Job History</span>
+    </button>
+    <button class="sidenav-item" data-tab="admin" type="button">
+      <span class="sidenav-ico" aria-hidden="true">&#x2699;</span>
+      <span class="sidenav-label">Admin</span>
+    </button>
+  </aside>
 
-  <!-- Tabs -->
-  <div class="tabs" role="tablist">
-    <button class="tab tab-active" role="tab" data-tab="extract">Extract</button>
-    <button class="tab" role="tab" data-tab="history">Job History</button>
-  </div>
+  <main class="container">
 
-  <!-- Extract Panel -->
-  <section id="panel-extract" class="panel panel-active">
-    <div class="card">
-      <div class="card-head">
-        <div>
-          <h2>Entity Sets</h2>
-          <p class="card-sub">Pick a service, choose a mode per entity, then run the extraction.</p>
-        </div>
-        <button class="btn btn-secondary" onclick="loadEntities()" title="Reload entity sets">
-          <span class="ico">&#x21bb;</span> Refresh
-        </button>
+    <!-- KPI Tiles -->
+    <section class="kpi-row" aria-label="Job statistics">
+      <div class="kpi-tile">
+        <div class="kpi-label">Total Jobs</div>
+        <div class="kpi-value" id="kpiTotal">&mdash;</div>
+        <div class="kpi-foot">All-time</div>
       </div>
+      <div class="kpi-tile kpi-running">
+        <div class="kpi-label">Running</div>
+        <div class="kpi-value" id="kpiRunning">&mdash;</div>
+        <div class="kpi-foot">Active now</div>
+      </div>
+      <div class="kpi-tile kpi-completed">
+        <div class="kpi-label">Completed</div>
+        <div class="kpi-value" id="kpiCompleted">&mdash;</div>
+        <div class="kpi-foot">Successful</div>
+      </div>
+      <div class="kpi-tile kpi-failed">
+        <div class="kpi-label">Failed</div>
+        <div class="kpi-value" id="kpiFailed">&mdash;</div>
+        <div class="kpi-foot">Errors</div>
+      </div>
+    </section>
 
-      <div class="form-grid">
-        <div class="field field-grow">
-          <label for="serviceSelect">Service</label>
-          <select id="serviceSelect" onchange="loadEntities()"></select>
+    <!-- Extract Panel -->
+    <section id="panel-extract" class="panel panel-active">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h2>Entity Sets</h2>
+            <p class="card-sub">Pick a service, choose a mode per entity, then run the extraction.</p>
+          </div>
+          <button class="btn btn-secondary" onclick="loadEntities()" title="Reload entity sets">
+            <span class="ico">&#x21bb;</span> Refresh
+          </button>
         </div>
-        <div class="field">
-          <label for="formatSelect">Output Format</label>
-          <select id="formatSelect">
-            <option value="csv" selected>CSV</option>
-            <option value="json">JSON</option>
-          </select>
+
+        <div class="form-grid">
+          <div class="field field-grow">
+            <label for="serviceSelect">Service</label>
+            <select id="serviceSelect" onchange="loadEntities()"></select>
+          </div>
+          <div class="field">
+            <label for="formatSelect">Output Format</label>
+            <select id="formatSelect">
+              <option value="csv" selected>CSV</option>
+              <option value="json">JSON</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="parallelInput" title="Number of parallel workers (Full without Delta only)">Parallel Workers</label>
+            <input id="parallelInput" type="number" min="1" max="32" value="3">
+          </div>
+          <div class="field">
+            <label for="pageSizeInput" title="$top page size (Full without Delta only). Default 5000">Page Size ($top)</label>
+            <input id="pageSizeInput" type="number" min="1" max="100000" value="5000">
+          </div>
         </div>
-        <div class="field">
-          <label for="parallelInput" title="Number of parallel workers (Full without Delta only)">Parallel Workers</label>
-          <input id="parallelInput" type="number" min="1" max="32" value="3">
+
+        <div class="filter-bar">
+          <div class="search-wrap">
+            <span class="search-icon" aria-hidden="true">&#x1F50D;</span>
+            <input id="entitySearch" type="search" placeholder="Search entity sets…" oninput="onEntitySearch()">
+          </div>
+          <span id="entityCount" class="muted-meta"></span>
         </div>
-        <div class="field">
-          <label for="pageSizeInput" title="$top page size (Full without Delta only). Default 5000">Page Size ($top)</label>
-          <input id="pageSizeInput" type="number" min="1" max="100000" value="5000">
+
+        <div id="entityTable" class="data-area">
+          <div class="empty-state">Click <strong>Refresh</strong> to load available entity sets from the server</div>
+        </div>
+
+        <div id="deltaArea" class="delta-area"></div>
+      </div>
+    </section>
+
+    <!-- History Panel -->
+    <section id="panel-history" class="panel">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h2>Job History</h2>
+            <p class="card-sub">Persisted record of all extraction runs. Click <em>View Logs</em> for per-job details.</p>
+          </div>
+          <button class="btn btn-secondary" onclick="loadHistory()" title="Reload job history">
+            <span class="ico">&#x21bb;</span> Refresh
+          </button>
+        </div>
+
+        <div class="filter-bar">
+          <div class="search-wrap search-wide">
+            <span class="search-icon" aria-hidden="true">&#x1F50D;</span>
+            <input id="historySearch" type="search" placeholder="Search by job id, entity, mode, state, error…" oninput="onHistorySearch()">
+          </div>
+        </div>
+
+        <div id="historyArea" class="data-area">
+          <div class="empty-state">Click <strong>Refresh</strong> to load history</div>
         </div>
       </div>
+    </section>
 
-      <div class="filter-bar">
-        <div class="search-wrap">
-          <span class="search-icon" aria-hidden="true">&#x1F50D;</span>
-          <input id="entitySearch" type="search" placeholder="Search entity sets…" oninput="onEntitySearch()">
+    <!-- Admin Panel: Service Catalog CRUD -->
+    <section id="panel-admin" class="panel">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h2>Service Catalog</h2>
+            <p class="card-sub">Manage SAP OData service endpoints. Per-service credentials override the global defaults.</p>
+          </div>
+          <div class="head-actions">
+            <button class="btn btn-secondary" onclick="loadAdminServices()" title="Reload">
+              <span class="ico">&#x21bb;</span> Refresh
+            </button>
+            <button class="btn btn-primary" onclick="openServiceForm()">+ New Service</button>
+          </div>
         </div>
-        <span id="entityCount" class="muted-meta"></span>
-      </div>
 
-      <div id="entityTable" class="data-area">
-        <div class="empty-state">Click <strong>Refresh</strong> to load available entity sets from the server</div>
-      </div>
-
-      <div id="deltaArea" class="delta-area"></div>
-    </div>
-  </section>
-
-  <!-- History Panel -->
-  <section id="panel-history" class="panel">
-    <div class="card">
-      <div class="card-head">
-        <div>
-          <h2>Job History</h2>
-          <p class="card-sub">Persisted record of all extraction runs. Click <em>View Logs</em> for per-job details.</p>
-        </div>
-        <button class="btn btn-secondary" onclick="loadHistory()" title="Reload job history">
-          <span class="ico">&#x21bb;</span> Refresh
-        </button>
-      </div>
-
-      <div class="filter-bar">
-        <div class="search-wrap search-wide">
-          <span class="search-icon" aria-hidden="true">&#x1F50D;</span>
-          <input id="historySearch" type="search" placeholder="Search by job id, entity, mode, state, error…" oninput="onHistorySearch()">
+        <div id="adminArea" class="data-area">
+          <div class="empty-state">Click <strong>Refresh</strong> to load services</div>
         </div>
       </div>
+    </section>
 
-      <div id="historyArea" class="data-area">
-        <div class="empty-state">Click <strong>Refresh</strong> to load history</div>
-      </div>
-    </div>
-  </section>
-
-</main>
+  </main>
+</div>
 
 <footer class="appfoot">
   <span>&copy; S/4HANA Generic Extractor</span>
@@ -170,6 +211,63 @@
     <div id="logArea" class="modal-body">
       <div class="empty-state">No logs yet</div>
     </div>
+  </div>
+</div>
+
+<!-- Service Editor Modal -->
+<div id="serviceModal" class="modal-backdrop" role="dialog" aria-modal="true" style="display:none">
+  <div class="modal modal-md">
+    <div class="modal-head">
+      <h2 id="serviceModalTitle">New Service</h2>
+      <button class="btn btn-ghost btn-sm" onclick="closeServiceForm()" aria-label="Close">&times;</button>
+    </div>
+    <form id="serviceForm" onsubmit="saveService(event)" class="modal-form">
+      <div class="modal-body">
+        <input type="hidden" id="svcId">
+        <div class="form-grid form-grid-2">
+          <div class="field">
+            <label for="svcName">Name <span class="req">*</span></label>
+            <input id="svcName" type="text" required placeholder="e.g. Sales Orders v2">
+          </div>
+          <div class="field">
+            <label for="svcIsDefault">Default Service</label>
+            <select id="svcIsDefault">
+              <option value="false">No</option>
+              <option value="true">Yes</option>
+            </select>
+          </div>
+          <div class="field span-2">
+            <label for="svcPath">Service Path <span class="req">*</span></label>
+            <input id="svcPath" type="text" required placeholder="/sap/opu/odata/sap/ZNC_KX_SO_SRV">
+          </div>
+          <div class="field span-2">
+            <label for="svcBaseUrl">Base URL <span class="hint">(blank = use global default)</span></label>
+            <input id="svcBaseUrl" type="text" placeholder="http://host:port">
+          </div>
+          <div class="field">
+            <label for="svcUser">Username <span class="hint">(optional)</span></label>
+            <input id="svcUser" type="text" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="svcPassword">Password <span class="hint">(blank = keep current)</span></label>
+            <input id="svcPassword" type="password" autocomplete="new-password">
+          </div>
+          <div class="field">
+            <label for="svcClient">SAP Client</label>
+            <input id="svcClient" type="text" placeholder="100">
+          </div>
+          <div class="field">
+            <label for="svcPrefer">Prefer Header</label>
+            <input id="svcPrefer" type="text" placeholder="odata.maxpagesize=5000,odata.track-changes">
+          </div>
+        </div>
+        <div id="svcFormError" class="form-error"></div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-secondary" onclick="closeServiceForm()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
   </div>
 </div>
 

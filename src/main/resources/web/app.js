@@ -152,33 +152,49 @@ function renderHistoryTable() {
   const startIdx = (historyPage - 1) * PAGE_SIZE;
   const pageRows = filtered.slice(startIdx, startIdx + PAGE_SIZE);
   const badgeClass = s => 'status-badge badge-' + (s || 'queued');
-  let html = '<table><thead><tr>'
+  let html = '<table class="data-table"><thead><tr>'
     + '<th>Job ID</th><th>Entity Set</th><th>Mode</th><th>State</th>'
-    + '<th>Records</th><th>Started</th><th>Completed</th><th>Duration</th><th>Delta Token</th><th>Logs</th>'
+    + '<th class="cell-num">Records</th><th>Started</th><th>Completed</th><th class="cell-num">Duration</th><th>Delta Token</th><th>Logs</th>'
     + '</tr></thead><tbody>';
+  let cards = '<div class="data-cards">';
   try {
     for (const r of pageRows) {
       const errMsg = r.error ? String(r.error) : '';
       const errEsc = errMsg.replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
-      // Show state as a colored pill badge; surface error text via tooltip on hover.
-      const stateCell = '<span title="' + errEsc + '" class="' + badgeClass(r.state) + '">' + (r.state || '') + '</span>';
+      const stateBadge = '<span title="' + errEsc + '" class="' + badgeClass(r.state) + '">' + (r.state || '') + '</span>';
       const durationCell = formatDuration(r.startedAt, r.completedAt, r.state);
+      const entityEsc = escapeHtml(r.entitySet || '');
+      const tokenStr = r.deltaToken ? String(r.deltaToken) : '';
+      const tokenEscQ = tokenStr.replace(/"/g, '&quot;');
+      const logsBtn = '<button class="btn btn-secondary btn-sm" data-action="view-logs" data-job-id="' + r.jobId + '" data-entity="' + entityEsc + '" data-state="' + (r.state || '') + '">View Logs</button>';
       html += '<tr>'
         + '<td>' + r.jobId + '</td>'
-        + '<td>' + (r.entitySet || '') + '</td>'
+        + '<td>' + entityEsc + '</td>'
         + '<td>' + (r.mode || '') + '</td>'
-        + '<td>' + stateCell + '</td>'
-        + '<td style="text-align:right">' + (r.recordCount ?? 0).toLocaleString() + '</td>'
-        + '<td>' + (r.startedAt || '') + '</td>'
-        + '<td>' + (r.completedAt || '') + '</td>'
-        + '<td style="text-align:right;font-variant-numeric:tabular-nums">' + durationCell + '</td>'
-        + '<td style="font-family:monospace;font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (r.deltaToken ? String(r.deltaToken).replace(/"/g,"&quot;") : "") + '">' + (r.deltaToken ? String(r.deltaToken) : '') + '</td>'
-        + '<td><button class="btn-refresh" data-action="view-logs" data-job-id="' + r.jobId + '" data-entity="' + escapeHtml(r.entitySet || '') + '" data-state="' + (r.state || '') + '">View Logs</button></td>'
+        + '<td>' + stateBadge + '</td>'
+        + '<td class="cell-num">' + (r.recordCount ?? 0).toLocaleString() + '</td>'
+        + '<td class="cell-mono cell-muted">' + (r.startedAt || '') + '</td>'
+        + '<td class="cell-mono cell-muted">' + (r.completedAt || '') + '</td>'
+        + '<td class="cell-num">' + durationCell + '</td>'
+        + '<td class="cell-mono cell-truncate" title="' + tokenEscQ + '">' + escapeHtml(tokenStr) + '</td>'
+        + '<td>' + logsBtn + '</td>'
         + '</tr>';
+      cards += '<div class="data-card">'
+        + '<div class="data-card-row"><span class="dc-key">Job #' + r.jobId + '</span>' + stateBadge + '</div>'
+        + '<div class="data-card-row"><span class="dc-key">Entity</span><span class="dc-val">' + entityEsc + '</span></div>'
+        + '<div class="data-card-row"><span class="dc-key">Mode</span><span class="dc-val">' + (r.mode || '') + '</span></div>'
+        + '<div class="data-card-row"><span class="dc-key">Records</span><span class="dc-val">' + (r.recordCount ?? 0).toLocaleString() + '</span></div>'
+        + '<div class="data-card-row"><span class="dc-key">Duration</span><span class="dc-val">' + durationCell + '</span></div>'
+        + '<div class="data-card-row"><span class="dc-key">Started</span><span class="dc-val cell-mono">' + (r.startedAt || '') + '</span></div>'
+        + (r.completedAt ? '<div class="data-card-row"><span class="dc-key">Completed</span><span class="dc-val cell-mono">' + r.completedAt + '</span></div>' : '')
+        + (tokenStr ? '<div class="data-card-row"><span class="dc-key">Delta Token</span><span class="dc-val cell-mono" style="word-break:break-all">' + escapeHtml(tokenStr) + '</span></div>' : '')
+        + '<div class="data-card-actions">' + logsBtn + '</div>'
+        + '</div>';
     }
     html += '</tbody></table>';
-    html += renderPager(total, historyPage, p => { historyPage = p; renderHistoryTable(); });
-    area.innerHTML = html;
+    cards += '</div>';
+    const pager = renderPager(total, historyPage, p => { historyPage = p; renderHistoryTable(); });
+    area.innerHTML = html + cards + pager;
     wirePager(area, total, historyPage, p => { historyPage = p; renderHistoryTable(); });
   } catch (e) {
     area.innerHTML = '<div class="empty-state" style="color:var(--danger)">Failed to render: ' + e.message + '</div>';
@@ -271,11 +287,13 @@ function renderEntityTable(servicePath) {
   if (entityPage > totalPages) entityPage = totalPages;
   const startIdx = (entityPage - 1) * PAGE_SIZE;
   const pageItems = filteredPairs.slice(startIdx, startIdx + PAGE_SIZE);
-  const modeSelectHtml = i => isV4
-    ? '<select class="mode-select" id="mode_' + i + '" disabled title="OData v4: only Full (Delta Disabled) is supported"><option value="full_no_delta" selected>Full (Delta Disabled)</option></select>'
-    : '<select class="mode-select" id="mode_' + i + '"><option value="full_no_delta">Full (Delta Disabled)</option><option value="full">Full</option><option value="delta">Delta</option></select>';
-  let html = '<table><thead><tr>' +
+  // Two variants of the mode select: desktop (with id) and mobile (no id, to avoid duplicates).
+  const modeSelectHtml = (i, withId) => isV4
+    ? '<select class="mode-select"' + (withId ? ' id="mode_' + i + '"' : '') + ' disabled title="OData v4: only Full (Delta Disabled) is supported"><option value="full_no_delta" selected>Full (Delta Disabled)</option></select>'
+    : '<select class="mode-select"' + (withId ? ' id="mode_' + i + '"' : '') + '><option value="full_no_delta">Full (Delta Disabled)</option><option value="full">Full</option><option value="delta">Delta</option></select>';
+  let html = '<table class="data-table"><thead><tr>' +
     '<th>Entity Set</th><th>Mode</th><th>Action</th></tr></thead><tbody>';
+  let cards = '<div class="data-cards">';
   pageItems.forEach(p => {
     const name = p.name;
     const i = p.idx;
@@ -284,18 +302,25 @@ function renderEntityTable(servicePath) {
       ? ''
       : '<button class="btn btn-secondary btn-sm" data-action="delta-status" data-entity="' + nameEsc + '" title="SubscribedTo' + nameEsc + '">Check Status</button> ' +
         '<button class="btn btn-danger btn-sm" data-action="delta-reset" data-entity="' + nameEsc + '" title="TerminateDeltasFor' + nameEsc + '">Reset Delta</button>';
+    const runBtn = '<button class="btn btn-primary btn-sm" data-action="run" data-entity="' + nameEsc + '" data-idx="' + i + '">&#x25B6; Run Extraction</button>';
     html += '<tr>' +
       '<td>' + nameEsc + '</td>' +
-      '<td>' + modeSelectHtml(i) + '</td>' +
-      '<td style="white-space:nowrap">' +
-        '<button class="btn btn-primary btn-sm" data-action="run" data-entity="' + nameEsc + '" data-idx="' + i + '">&#x25B6; Run Extraction</button> ' +
+      '<td>' + modeSelectHtml(i, true) + '</td>' +
+      '<td class="cell-actions">' +
+        runBtn + ' ' +
         deltaButtons +
       '</td>' +
       '</tr>';
+    cards += '<div class="data-card">'
+      + '<div class="data-card-row"><span class="dc-key">Entity</span><span class="dc-val"><strong>' + nameEsc + '</strong></span></div>'
+      + '<div class="data-card-row"><span class="dc-key">Mode</span><span class="dc-val">' + modeSelectHtml(i, false) + '</span></div>'
+      + '<div class="data-card-actions">' + runBtn + ' ' + deltaButtons + '</div>'
+      + '</div>';
   });
   html += '</tbody></table>';
-  html += renderPager(total, entityPage, p => { entityPage = p; renderEntityTable(); });
-  tableDiv.innerHTML = html;
+  cards += '</div>';
+  const pager = renderPager(total, entityPage, p => { entityPage = p; renderEntityTable(); });
+  tableDiv.innerHTML = html + cards + pager;
   wirePager(tableDiv, total, entityPage, p => { entityPage = p; renderEntityTable(); });
   // Wire up per-row buttons via delegation (avoids inline-onclick quoting issues)
   tableDiv.querySelectorAll('button[data-action]').forEach(btn => {
@@ -303,8 +328,11 @@ function renderEntityTable(servicePath) {
       const action = btn.dataset.action;
       const entity = btn.dataset.entity;
       if (action === 'run') {
-        const idx = parseInt(btn.dataset.idx, 10);
-        const mode = document.getElementById('mode_' + idx).value;
+        // Find the mode select in the same row/card. Both desktop and mobile views
+        // share the id `mode_<idx>`, so we scope by the nearest container instead.
+        const container = btn.closest('tr, .data-card');
+        const sel = container ? container.querySelector('select.mode-select') : null;
+        const mode = sel ? sel.value : 'full_no_delta';
         runExtractionFor(entity, mode);
       } else if (action === 'delta-status') checkDeltaStatus(entity);
       else if (action === 'delta-reset') resetDelta(entity);
@@ -539,17 +567,190 @@ function formatDuration(startedAt, completedAt, state) {
   return (h > 0 ? h + ':' + pad(m) : m) + ':' + pad(s);
 }
 
-// ============== Tabs ==============
+// ============== Tabs / Sidenav ==============
+const TAB_LABELS = { extract: 'Extract', history: 'Job History', admin: 'Admin' };
+
+function activateTab(name) {
+  document.querySelectorAll('.sidenav-item').forEach(t => t.classList.toggle('sidenav-active', t.dataset.tab === name));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('panel-active'));
+  const target = document.getElementById('panel-' + name);
+  if (target) target.classList.add('panel-active');
+  const crumb = document.getElementById('crumbCurrent');
+  if (crumb) crumb.textContent = TAB_LABELS[name] || name;
+  if (name === 'admin') loadAdminServices();
+  // Close mobile drawer after navigation
+  const sidenav = document.getElementById('sidenav');
+  if (sidenav) sidenav.classList.remove('open');
+  const navToggle = document.getElementById('navToggle');
+  if (navToggle) navToggle.setAttribute('aria-expanded', 'false');
+}
+
 function wireTabs() {
-  document.querySelectorAll('.tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('tab-active'));
-      document.querySelectorAll('.panel').forEach(p => p.classList.remove('panel-active'));
-      tab.classList.add('tab-active');
-      const target = document.getElementById('panel-' + tab.dataset.tab);
-      if (target) target.classList.add('panel-active');
+  document.querySelectorAll('.sidenav-item').forEach(item => {
+    item.addEventListener('click', () => activateTab(item.dataset.tab));
+  });
+  const toggle = document.getElementById('navToggle');
+  if (toggle) {
+    toggle.addEventListener('click', () => {
+      const sidenav = document.getElementById('sidenav');
+      const open = sidenav.classList.toggle('open');
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+  }
+}
+
+// ============== Admin: Service Catalog ==============
+let adminServicesCache = [];
+
+async function loadAdminServices() {
+  const area = document.getElementById('adminArea');
+  area.innerHTML = '<div class="empty-state"><span class="spinner"></span> Loading services\u2026</div>';
+  try {
+    const res = await fetch('/api/admin/services');
+    if (res.status === 503) {
+      area.innerHTML = '<div class="empty-state" style="color:var(--danger)">Database not available \u2014 service catalog requires PostgreSQL.</div>';
+      return;
+    }
+    const data = await res.json();
+    adminServicesCache = data.services || [];
+    renderAdminServices();
+  } catch (e) {
+    area.innerHTML = '<div class="empty-state" style="color:var(--danger)">Failed to load: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function renderAdminServices() {
+  const area = document.getElementById('adminArea');
+  const rows = adminServicesCache;
+  if (!rows.length) {
+    area.innerHTML = '<div class="empty-state">No services defined. Click <strong>+ New Service</strong> to add one.</div>';
+    return;
+  }
+  let html = '<table class="data-table"><thead><tr>'
+    + '<th>Name</th><th>Service Path</th><th>Base URL</th><th>Username</th>'
+    + '<th>Client</th><th style="text-align:center">Default</th><th>Updated</th><th>Actions</th>'
+    + '</tr></thead><tbody>';
+  let cards = '<div class="data-cards">';
+  for (const r of rows) {
+    const def = r.isDefault
+      ? '<span class="status-badge badge-completed">Default</span>'
+      : '<span class="cell-muted">\u2014</span>';
+    const editBtn = '<button class="btn btn-secondary btn-sm" data-admin-action="edit" data-id="' + r.id + '">Edit</button>';
+    const delBtn = '<button class="btn btn-danger btn-sm" data-admin-action="delete" data-id="' + r.id + '">Remove</button>';
+    html += '<tr>'
+      + '<td><strong>' + escapeHtml(r.name || '') + '</strong></td>'
+      + '<td class="cell-mono cell-truncate" title="' + escapeHtml(r.servicePath || '') + '">' + escapeHtml(r.servicePath || '') + '</td>'
+      + '<td class="cell-mono cell-muted cell-truncate" title="' + escapeHtml(r.baseUrl || '') + '">' + escapeHtml(r.baseUrl || '\u2014') + '</td>'
+      + '<td>' + escapeHtml(r.username || '\u2014') + '</td>'
+      + '<td>' + escapeHtml(r.sapClient || '\u2014') + '</td>'
+      + '<td style="text-align:center">' + def + '</td>'
+      + '<td class="cell-muted" style="font-size:12px">' + escapeHtml(r.updatedAt || '') + '</td>'
+      + '<td class="cell-actions">' + editBtn + ' ' + delBtn + '</td>'
+      + '</tr>';
+    cards += '<div class="data-card">'
+      + '<div class="data-card-row"><span class="dc-key"><strong>' + escapeHtml(r.name || '') + '</strong></span>' + def + '</div>'
+      + '<div class="data-card-row"><span class="dc-key">Path</span><span class="dc-val cell-mono" style="word-break:break-all">' + escapeHtml(r.servicePath || '') + '</span></div>'
+      + (r.baseUrl ? '<div class="data-card-row"><span class="dc-key">Base URL</span><span class="dc-val cell-mono" style="word-break:break-all">' + escapeHtml(r.baseUrl) + '</span></div>' : '')
+      + (r.username ? '<div class="data-card-row"><span class="dc-key">User</span><span class="dc-val">' + escapeHtml(r.username) + '</span></div>' : '')
+      + (r.sapClient ? '<div class="data-card-row"><span class="dc-key">Client</span><span class="dc-val">' + escapeHtml(r.sapClient) + '</span></div>' : '')
+      + '<div class="data-card-actions">' + editBtn + ' ' + delBtn + '</div>'
+      + '</div>';
+  }
+  html += '</tbody></table>';
+  cards += '</div>';
+  area.innerHTML = html + cards;
+  area.querySelectorAll('button[data-admin-action]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = parseInt(btn.dataset.id, 10);
+      if (btn.dataset.adminAction === 'edit') openServiceForm(id);
+      else if (btn.dataset.adminAction === 'delete') deleteService(id);
     });
   });
+}
+
+function openServiceForm(id) {
+  document.getElementById('svcFormError').textContent = '';
+  document.getElementById('serviceForm').reset();
+  document.getElementById('svcId').value = '';
+  if (id) {
+    const row = adminServicesCache.find(r => r.id === id);
+    if (row) {
+      document.getElementById('serviceModalTitle').textContent = 'Edit Service';
+      document.getElementById('svcId').value = row.id;
+      document.getElementById('svcName').value = row.name || '';
+      document.getElementById('svcPath').value = row.servicePath || '';
+      document.getElementById('svcBaseUrl').value = row.baseUrl || '';
+      document.getElementById('svcUser').value = row.username || '';
+      document.getElementById('svcPassword').value = '';
+      document.getElementById('svcClient').value = row.sapClient || '';
+      document.getElementById('svcPrefer').value = row.preferHeader || '';
+      document.getElementById('svcIsDefault').value = row.isDefault ? 'true' : 'false';
+    }
+  } else {
+    document.getElementById('serviceModalTitle').textContent = 'New Service';
+  }
+  document.getElementById('serviceModal').style.display = 'flex';
+}
+
+function closeServiceForm() {
+  document.getElementById('serviceModal').style.display = 'none';
+}
+
+async function saveService(ev) {
+  ev.preventDefault();
+  const id = document.getElementById('svcId').value;
+  const payload = {
+    name: document.getElementById('svcName').value.trim(),
+    servicePath: document.getElementById('svcPath').value.trim(),
+    baseUrl: document.getElementById('svcBaseUrl').value.trim() || null,
+    username: document.getElementById('svcUser').value.trim() || null,
+    sapClient: document.getElementById('svcClient').value.trim() || null,
+    preferHeader: document.getElementById('svcPrefer').value.trim() || null,
+    isDefault: document.getElementById('svcIsDefault').value === 'true'
+  };
+  const pw = document.getElementById('svcPassword').value;
+  // Send password only when user typed one. Server preserves the existing password
+  // when the field is absent from the PUT payload.
+  if (pw) payload.password = pw;
+  const errEl = document.getElementById('svcFormError');
+  errEl.textContent = '';
+  try {
+    const url = id ? '/api/admin/services/' + id : '/api/admin/services';
+    const method = id ? 'PUT' : 'POST';
+    const res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      errEl.textContent = data.error || ('HTTP ' + res.status);
+      return;
+    }
+    showToast(id ? 'Service updated' : 'Service created', 'success');
+    closeServiceForm();
+    await loadAdminServices();
+    // Refresh service dropdown on Extract panel
+    await loadServices();
+  } catch (e) {
+    errEl.textContent = e.message;
+  }
+}
+
+async function deleteService(id) {
+  const row = adminServicesCache.find(r => r.id === id);
+  const label = row ? row.name : ('#' + id);
+  if (!confirm('Remove service "' + label + '" from the catalog?\n\nIt will be marked as deleted and hidden from the UI. The record is retained for audit and can be restored from the database.')) return;
+  try {
+    const res = await fetch('/api/admin/services/' + id, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    showToast('Service removed', 'success');
+    await loadAdminServices();
+    await loadServices();
+  } catch (e) {
+    showToast('Remove failed: ' + e.message, 'error');
+  }
 }
 
 // Auto-load entities and history on page open
@@ -566,4 +767,9 @@ window.addEventListener('load', async () => {
   });
 });
 // Close logs modal with Escape
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLogsModal(); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    closeLogsModal();
+    closeServiceForm();
+  }
+});

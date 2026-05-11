@@ -2,6 +2,7 @@ package com.example;
 
 import com.example.config.ExtractorConfig;
 import com.example.db.JobHistoryRepository;
+import com.example.db.ServicesRepository;
 import com.example.extractor.HttpClient;
 import com.example.extractor.MetadataDiscovery;
 import com.example.extractor.ODataExtractor;
@@ -48,8 +49,10 @@ public class WebUIServer {
     private static final AtomicInteger jobIdCounter = new AtomicInteger(0);
     private static final Map<Integer, JobStatus> jobs = new ConcurrentHashMap<>();
     private static final JobHistoryRepository repo = new JobHistoryRepository();
+    private static final ServicesRepository servicesRepo = new ServicesRepository();
     static {
         repo.initSchema();
+        servicesRepo.initSchema();
         // Seed the counter past any previously persisted job_id so restarts don't reuse IDs.
         jobIdCounter.set(repo.getMaxJobId());
     }
@@ -60,6 +63,34 @@ public class WebUIServer {
     public WebUIServer(ExtractorConfig baseConfig, int port) {
         this.baseConfig = baseConfig;
         this.port = port;
+        // One-time seed of services table from application.properties when the table is empty.
+        servicesRepo.seedFromPropertiesIfEmpty(
+                baseConfig.getServicePath(),
+                baseConfig.getServicePaths(),
+                baseConfig.getBaseUrl(),
+                baseConfig.getUser(),
+                baseConfig.getPassword(),
+                baseConfig.getClient(),
+                baseConfig.getPreferHeader());
+    }
+
+    /**
+     * Resolves an {@link ExtractorConfig} for the given service path:
+     *   1. If a services row exists for that path, apply its overrides on top of baseConfig.
+     *   2. Otherwise, just switch baseConfig's service path.
+     *   3. If servicePath is null/blank, return baseConfig unchanged.
+     */
+    private ExtractorConfig resolveConfig(String servicePath) {
+        if (servicePath == null || servicePath.isBlank()) return baseConfig;
+        Map<String, Object> row = servicesRepo.findByPathWithSecret(servicePath);
+        if (row == null) return baseConfig.withServicePath(servicePath);
+        return baseConfig.withConnection(
+                (String) row.get("servicePath"),
+                (String) row.get("baseUrl"),
+                (String) row.get("username"),
+                (String) row.get("password"),
+                (String) row.get("sapClient"),
+                (String) row.get("preferHeader"));
     }
 
     public void start() throws IOException {
@@ -69,6 +100,7 @@ public class WebUIServer {
 
         server.createContext("/", this::handleIndex);
         server.createContext("/api/services", this::handleServices);
+        server.createContext("/api/admin/services", this::handleAdminServices);
         server.createContext("/api/entities", this::handleEntities);
         server.createContext("/api/extract", this::handleExtract);
         server.createContext("/api/jobs", this::handleJobs);
@@ -123,11 +155,142 @@ public class WebUIServer {
             return;
         }
         JsonObject response = new JsonObject();
+        List<Map<String, Object>> rows = servicesRepo.listAll();
         JsonArray arr = new JsonArray();
-        baseConfig.getServicePaths().forEach(arr::add);
+        String defaultPath = null;
+        if (rows.isEmpty()) {
+            // Fallback to properties-driven list when DB has no rows yet or is offline.
+            baseConfig.getServicePaths().forEach(arr::add);
+            defaultPath = baseConfig.getServicePath();
+        } else {
+            for (Map<String, Object> r : rows) {
+                String p = (String) r.get("servicePath");
+                arr.add(p);
+                if (Boolean.TRUE.equals(r.get("isDefault")) && defaultPath == null) defaultPath = p;
+            }
+            if (defaultPath == null) defaultPath = (String) rows.get(0).get("servicePath");
+        }
         response.add("servicePaths", arr);
-        response.addProperty("defaultServicePath", baseConfig.getServicePath());
+        response.addProperty("defaultServicePath", defaultPath);
         sendResponse(exchange, 200, "application/json", gson.toJson(response));
+    }
+
+    // ── REST: admin CRUD for services ─────────────────────────────────────
+
+    private void handleAdminServices(HttpExchange exchange) throws IOException {
+        String method = exchange.getRequestMethod();
+        String path = exchange.getRequestURI().getPath();
+        // /api/admin/services            (list / create)
+        // /api/admin/services/{id}       (update / delete)
+        String tail = path.substring("/api/admin/services".length());
+        Integer id = null;
+        if (tail.startsWith("/")) {
+            try { id = Integer.parseInt(tail.substring(1)); }
+            catch (NumberFormatException e) {
+                sendResponse(exchange, 400, "application/json", "{\"error\":\"Invalid id\"}");
+                return;
+            }
+        }
+        if (!servicesRepo.isAvailable()) {
+            sendResponse(exchange, 503, "application/json",
+                    "{\"error\":\"Database not available\"}");
+            return;
+        }
+        try {
+            switch (method) {
+                case "GET" -> {
+                    if (id == null) {
+                        JsonObject resp = new JsonObject();
+                        resp.add("services", gson.toJsonTree(servicesRepo.listAll()));
+                        sendResponse(exchange, 200, "application/json", gson.toJson(resp));
+                    } else {
+                        Map<String, Object> row = servicesRepo.findById(id);
+                        if (row == null) sendResponse(exchange, 404, "application/json", "{\"error\":\"Not found\"}");
+                        else sendResponse(exchange, 200, "application/json", gson.toJson(row));
+                    }
+                }
+                case "POST" -> {
+                    if (id != null) {
+                        sendResponse(exchange, 405, "application/json", "{\"error\":\"Use PUT for updates\"}");
+                        return;
+                    }
+                    JsonObject body = readJsonBody(exchange);
+                    String svcPath = jsonStr(body, "servicePath");
+                    String name = jsonStr(body, "name");
+                    if (svcPath == null || svcPath.isBlank() || name == null || name.isBlank()) {
+                        sendResponse(exchange, 400, "application/json",
+                                "{\"error\":\"name and servicePath are required\"}");
+                        return;
+                    }
+                    Map<String, Object> created = servicesRepo.insert(
+                            name, svcPath,
+                            jsonStr(body, "baseUrl"),
+                            jsonStr(body, "username"),
+                            jsonStr(body, "password"),
+                            jsonStr(body, "sapClient"),
+                            jsonStr(body, "preferHeader"),
+                            body.has("isDefault") && !body.get("isDefault").isJsonNull() && body.get("isDefault").getAsBoolean());
+                    sendResponse(exchange, 201, "application/json", gson.toJson(created));
+                }
+                case "PUT" -> {
+                    if (id == null) {
+                        sendResponse(exchange, 400, "application/json", "{\"error\":\"Missing id\"}");
+                        return;
+                    }
+                    JsonObject body = readJsonBody(exchange);
+                    String svcPath = jsonStr(body, "servicePath");
+                    String name = jsonStr(body, "name");
+                    if (svcPath == null || svcPath.isBlank() || name == null || name.isBlank()) {
+                        sendResponse(exchange, 400, "application/json",
+                                "{\"error\":\"name and servicePath are required\"}");
+                        return;
+                    }
+                    // Preserve existing password if the request omits the "password" field.
+                    String password = jsonStr(body, "password");
+                    if (password == null) {
+                        Map<String, Object> existing = servicesRepo.findByPathWithSecret(svcPath);
+                        if (existing == null) existing = servicesRepo.findById(id);
+                        if (existing != null) password = (String) existing.get("password");
+                    }
+                    Map<String, Object> updated = servicesRepo.update(
+                            id, name, svcPath,
+                            jsonStr(body, "baseUrl"),
+                            jsonStr(body, "username"),
+                            password,
+                            jsonStr(body, "sapClient"),
+                            jsonStr(body, "preferHeader"),
+                            body.has("isDefault") && !body.get("isDefault").isJsonNull() && body.get("isDefault").getAsBoolean());
+                    if (updated == null) sendResponse(exchange, 404, "application/json", "{\"error\":\"Not found\"}");
+                    else sendResponse(exchange, 200, "application/json", gson.toJson(updated));
+                }
+                case "DELETE" -> {
+                    if (id == null) {
+                        sendResponse(exchange, 400, "application/json", "{\"error\":\"Missing id\"}");
+                        return;
+                    }
+                    boolean ok = servicesRepo.delete(id);
+                    sendResponse(exchange, ok ? 200 : 404, "application/json",
+                            ok ? "{\"deleted\":true}" : "{\"error\":\"Not found\"}");
+                }
+                default -> sendResponse(exchange, 405, "text/plain", "Method Not Allowed");
+            }
+        } catch (Exception e) {
+            logger.error("Admin services request failed", e);
+            JsonObject err = new JsonObject();
+            err.addProperty("error", e.getMessage());
+            sendResponse(exchange, 500, "application/json", gson.toJson(err));
+        }
+    }
+
+    private JsonObject readJsonBody(HttpExchange exchange) throws IOException {
+        String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        if (body.isBlank()) return new JsonObject();
+        return gson.fromJson(body, JsonObject.class);
+    }
+
+    private static String jsonStr(JsonObject obj, String key) {
+        if (obj == null || !obj.has(key) || obj.get(key).isJsonNull()) return null;
+        return obj.get(key).getAsString();
     }
 
     // ── REST: list entity sets ────────────────────────────────────────────
@@ -139,9 +302,7 @@ public class WebUIServer {
         }
         try {
             String requestedService = getQueryParam(exchange, "service");
-            ExtractorConfig effective = (requestedService == null || requestedService.isBlank())
-                    ? baseConfig
-                    : baseConfig.withServicePath(requestedService);
+            ExtractorConfig effective = resolveConfig(requestedService);
             HttpClient httpClient = new HttpClient(effective);
             ServiceDiscovery discovery = new ServiceDiscovery(effective, httpClient);
             List<String> entities = discovery.discoverEntitySets();
@@ -291,9 +452,7 @@ public class WebUIServer {
                     + ("full_no_delta".equalsIgnoreCase(mode) ? " with " + parallelCalls + " parallel worker(s), pageSize=" + pageSize : "")
                     + (servicePath != null && !servicePath.isBlank() ? " via service " + servicePath : ""));
 
-            ExtractorConfig svcCfg = (servicePath == null || servicePath.isBlank())
-                    ? baseConfig
-                    : baseConfig.withServicePath(servicePath);
+            ExtractorConfig svcCfg = resolveConfig(servicePath);
             ExtractorConfig config = svcCfg.withOverrides(entitySet, mode, parallelCalls, pageSize);
             HttpClient httpClient = new HttpClient(config);
 
@@ -465,9 +624,7 @@ public class WebUIServer {
     }
 
     private void invokeFunctionImport(HttpExchange exchange, String functionName, String servicePath) throws IOException {
-        ExtractorConfig effective = (servicePath == null || servicePath.isBlank())
-                ? baseConfig
-                : baseConfig.withServicePath(servicePath);
+        ExtractorConfig effective = resolveConfig(servicePath);
         String url = effective.getBaseUrl() + effective.getServicePath()
                 + "/" + functionName
                 + "?$format=json&sap-client=" + effective.getClient();
