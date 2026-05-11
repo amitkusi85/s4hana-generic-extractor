@@ -86,7 +86,15 @@ public class GenericExtractorApp {
             Path outputFile = outputPath.resolve(prefix + "." + format);
 
             int count;
-            if ("json".equalsIgnoreCase(format)) {
+            if (config.isFullNoDelta() && "csv".equalsIgnoreCase(format)) {
+                ODataExtractor.ParallelResult pr = extractor.extractParallelToCsvFiles(outputPath, prefix);
+                count = pr.totalCount;
+                if (!pr.partFiles.isEmpty()) {
+                    com.example.writer.CsvFileMerger.merge(pr.partFiles, outputFile, true);
+                } else {
+                    java.nio.file.Files.createFile(outputFile);
+                }
+            } else if ("json".equalsIgnoreCase(format)) {
                 List<Map<String, String>> allData = new ArrayList<>();
                 count = extractor.extract(allData::addAll);
                 new JsonFileWriter().write(allData, outputFile);

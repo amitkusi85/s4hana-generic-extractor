@@ -2,6 +2,10 @@ package com.example.extractor;
 
 import com.example.config.ExtractorConfig;
 import com.example.db.JobHistoryRepository;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.w3c.dom.*;
@@ -44,6 +48,15 @@ public class ODataExtractor {
         this.jobId = jobId;
     }
 
+    /** Log to slf4j and (when a job context is set) persist to job_logs. */
+    private void jobLog(String level, String message) {
+        if ("WARN".equalsIgnoreCase(level)) logger.warn(message);
+        else logger.info(message);
+        if (repo != null && jobId > 0 && repo.isAvailable()) {
+            repo.appendLog(jobId, level, message);
+        }
+    }
+
     /**
      * Extracts records in a streaming fashion.
      * Each page of results is passed to the batchConsumer as it arrives.
@@ -66,23 +79,167 @@ public class ODataExtractor {
         }
     }
 
+    /** Result of a parallel-to-files extraction. */
+    public static class ParallelResult {
+        public final int totalCount;
+        public final List<java.nio.file.Path> partFiles;
+        public ParallelResult(int totalCount, List<java.nio.file.Path> partFiles) {
+            this.totalCount = totalCount;
+            this.partFiles = partFiles;
+        }
+    }
+
+    /**
+     * Parallel $top/$skip extraction where each worker writes its own CSV file.
+     * Worker i fetches offsets [i*pageSize, (i+N)*pageSize, (i+2N)*pageSize, ...].
+     * Returns the list of part files (one per worker that produced rows) and total record count.
+     */
+    public ParallelResult extractParallelToCsvFiles(java.nio.file.Path outDir, String prefix) throws Exception {
+        int requestedPageSize = getPageSize();
+        int parallelCalls = Math.max(1, config.getParallelCalls());
+        String select = String.join(",", fields);
+        String base = config.getBaseUrl() + config.getServicePath() + "/" + config.getEntitySet();
+        boolean v4 = config.isV4();
+
+        // For v4 the SAP gateway often caps server-side page size below the requested $top.
+        // Probe one page to discover the effective cap, then use it as both $top and the worker stride.
+        int pageSize = requestedPageSize;
+        if (v4) {
+            String probeUrl = base + "?$select=" + select + "&$top=" + requestedPageSize + "&$skip=0";
+            jobLog("INFO", "[probe] Detecting effective page size: " + probeUrl);
+            String probeBody = httpClient.executeRequest(probeUrl);
+            List<Map<String, String>> probeBatch = parseEntriesJson(probeBody);
+            int returned = probeBatch.size();
+            if (returned == 0) {
+                jobLog("INFO", "[probe] Server returned 0 rows. Nothing to extract.");
+                return new ParallelResult(0, java.util.Collections.emptyList());
+            }
+            // If the server honored the request, keep the configured size; otherwise drop to the cap.
+            pageSize = (returned < requestedPageSize) ? returned : requestedPageSize;
+            jobLog("INFO", "[probe] Server returned " + returned + " rows (requested " + requestedPageSize
+                    + "). Effective pageSize=" + pageSize);
+        }
+
+        jobLog("INFO", "Full Load (delta disabled, per-worker files): pageSize=" + pageSize
+                + ", parallelCalls=" + parallelCalls + (v4 ? " (OData v4 / JSON)" : ""));
+
+        ExecutorService executor = Executors.newFixedThreadPool(parallelCalls);
+        List<Future<int[]>> futures = new ArrayList<>();
+        java.nio.file.Path[] partFiles = new java.nio.file.Path[parallelCalls];
+
+        try {
+            final int effectivePageSize = pageSize;
+            for (int w = 0; w < parallelCalls; w++) {
+                final int workerIndex = w;
+                final java.nio.file.Path partFile = outDir.resolve(prefix + "_part" + workerIndex + ".csv");
+                partFiles[w] = partFile;
+                futures.add(executor.submit(() -> runWorker(workerIndex, parallelCalls, effectivePageSize, base, select, partFile)));
+            }
+
+            int total = 0;
+            List<java.nio.file.Path> produced = new ArrayList<>();
+            for (int i = 0; i < futures.size(); i++) {
+                int[] r = futures.get(i).get();
+                int count = r[0];
+                total += count;
+                if (count > 0) {
+                    produced.add(partFiles[i]);
+                } else {
+                    // Worker produced no rows; remove empty file if it was created
+                    try { java.nio.file.Files.deleteIfExists(partFiles[i]); } catch (Exception ignore) {}
+                }
+            }
+            jobLog("INFO", "All " + parallelCalls + " workers complete. Total records=" + total
+                    + ", part files=" + produced.size());
+            return new ParallelResult(total, produced);
+        } finally {
+            executor.shutdown();
+        }
+    }
+
+    private int[] runWorker(int idx, int parallelCalls, int pageSize, String base, String select,
+                            java.nio.file.Path partFile) throws Exception {
+        boolean v4 = config.isV4();
+        DocumentBuilder builder = null;
+        if (!v4) {
+            DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+            dbf.setNamespaceAware(true);
+            dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            dbf.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            dbf.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            builder = dbf.newDocumentBuilder();
+        }
+
+        int count = 0;
+        try (com.example.writer.CsvFileWriter writer = new com.example.writer.CsvFileWriter()) {
+            writer.open(partFile);
+            int skip = idx * pageSize;
+            while (true) {
+                String url = base + "?$select=" + select + "&$top=" + pageSize + "&$skip=" + skip;
+                jobLog("INFO", "[worker " + idx + "] Fetching: " + url);
+                String responseBody = httpClient.executeRequest(url);
+                List<Map<String, String>> batch;
+                if (v4) {
+                    batch = parseEntriesJson(responseBody);
+                } else {
+                    Document doc = builder.parse(new InputSource(new StringReader(responseBody)));
+                    batch = parseEntries(doc);
+                }
+                if (batch.isEmpty()) break;
+
+                writer.writeBatch(batch);
+                count += batch.size();
+                jobLog("INFO", "[worker " + idx + "] fetched " + count + " rows so far (skip=" + skip + ")");
+
+                // For v4, only stop on an empty page (the server may cap any page below the requested $top).
+                // For v2, a short page reliably means end-of-data and we can stop early.
+                if (!v4 && batch.size() < pageSize) break;
+                skip += parallelCalls * pageSize;
+            }
+        }
+        return new int[]{count};
+    }
+
     /**
      * Pagination via $top and $skip with parallel calls (used for full_no_delta mode).
      */
     private int extractWithTopSkip(Consumer<List<Map<String, String>>> batchConsumer,
                                     DocumentBuilder builder) throws Exception {
-        int pageSize = getPageSize();
+        int requestedPageSize = getPageSize();
         int parallelCalls = config.getParallelCalls();
         String select = String.join(",", fields);
         String base = config.getBaseUrl() + config.getServicePath() + "/" + config.getEntitySet();
+        boolean v4 = config.isV4();
 
-        logger.info("Full Load (delta disabled): $top/$skip pagination, pageSize={}, parallelCalls={}",
-                pageSize, parallelCalls);
+        // For v4 the SAP gateway often caps server-side page size below the requested $top.
+        // Probe one page to discover the effective cap, then use it as both $top and the worker stride.
+        int pageSize = requestedPageSize;
+        if (v4) {
+            String probeUrl = base + "?$select=" + select + "&$top=" + requestedPageSize + "&$skip=0";
+            jobLog("INFO", "[probe] Detecting effective page size: " + probeUrl);
+            String probeBody = httpClient.executeRequest(probeUrl);
+            List<Map<String, String>> probeBatch = parseEntriesJson(probeBody);
+            int returned = probeBatch.size();
+            if (returned == 0) {
+                jobLog("INFO", "[probe] Server returned 0 rows. Nothing to extract.");
+                return 0;
+            }
+            pageSize = (returned < requestedPageSize) ? returned : requestedPageSize;
+            jobLog("INFO", "[probe] Server returned " + returned + " rows (requested " + requestedPageSize
+                    + "). Effective pageSize=" + pageSize);
+            // Emit the probe batch so we don't refetch skip=0
+            batchConsumer.accept(probeBatch);
+        }
+
+        jobLog("INFO", "Full Load (delta disabled): $top/$skip pagination, pageSize=" + pageSize
+                + ", parallelCalls=" + parallelCalls + (v4 ? " (OData v4 / JSON)" : ""));
 
         ExecutorService executor = Executors.newFixedThreadPool(parallelCalls);
-        int totalCount = 0;
-        int skip = 0;
+        int totalCount = v4 ? pageSize : 0; // already consumed the probe page
+        // Start the next round at skip = pageSize for v4 (probe consumed [0, pageSize)); skip=0 for v2.
+        int skip = v4 ? pageSize : 0;
         boolean done = false;
+        final int finalPageSize = pageSize;
 
         try {
             while (!done) {
@@ -90,12 +247,15 @@ public class ODataExtractor {
                 List<Future<List<Map<String, String>>>> futures = new ArrayList<>();
                 int[] offsets = new int[parallelCalls];
                 for (int i = 0; i < parallelCalls; i++) {
-                    offsets[i] = skip + i * pageSize;
+                    offsets[i] = skip + i * finalPageSize;
                     int currentSkip = offsets[i];
                     futures.add(executor.submit(() -> {
-                        String url = base + "?$select=" + select + "&$top=" + pageSize + "&$skip=" + currentSkip;
-                        logger.info("Fetching: {}", url);
+                        String url = base + "?$select=" + select + "&$top=" + finalPageSize + "&$skip=" + currentSkip;
+                        jobLog("INFO", "Fetching: " + url);
                         String responseBody = httpClient.executeRequest(url);
+                        if (v4) {
+                            return parseEntriesJson(responseBody);
+                        }
                         DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
                         dbf.setNamespaceAware(true);
                         dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
@@ -116,15 +276,17 @@ public class ODataExtractor {
                     }
                     totalCount += batch.size();
                     batchConsumer.accept(batch);
-                    logger.info("Fetched {} records so far (skip={})", totalCount, offsets[i]);
+                    jobLog("INFO", "Fetched " + totalCount + " records so far (skip=" + offsets[i] + ")");
 
-                    if (batch.size() < pageSize) {
+                    // For v4, only stop on an empty page (server may cap any page below requested $top).
+                    // For v2, a short page reliably means end-of-data.
+                    if (!v4 && batch.size() < finalPageSize) {
                         done = true;
                         break;
                     }
                 }
 
-                skip += parallelCalls * pageSize;
+                skip += parallelCalls * finalPageSize;
             }
         } finally {
             executor.shutdown();
@@ -142,7 +304,7 @@ public class ODataExtractor {
         String url = buildInitialUrl();
 
         while (url != null) {
-            logger.info("Fetching: {}", url);
+            jobLog("INFO", "Fetching: " + url);
             String responseBody = httpClient.executeRequest(url);
 
             Document doc = builder.parse(new InputSource(new StringReader(responseBody)));
@@ -150,7 +312,7 @@ public class ODataExtractor {
 
             totalCount += batch.size();
             batchConsumer.accept(batch);
-            logger.info("Fetched {} records so far", totalCount);
+            jobLog("INFO", "Fetched " + totalCount + " records so far");
 
             // Handle server-side paging and delta links
             url = null;
@@ -273,8 +435,45 @@ public class ODataExtractor {
         return batch;
     }
 
+    /** Parse an OData v4 JSON page: {"value":[{...},...], "@odata.nextLink": ...?}. */
+    private List<Map<String, String>> parseEntriesJson(String body) {
+        if (body == null || body.isBlank()) return Collections.emptyList();
+        JsonElement root;
+        try {
+            root = JsonParser.parseString(body);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to parse v4 JSON response: " + e.getMessage()
+                    + " (first 200 chars: " + body.substring(0, Math.min(body.length(), 200)) + ")", e);
+        }
+        if (!root.isJsonObject()) return Collections.emptyList();
+        JsonObject obj = root.getAsJsonObject();
+        if (!obj.has("value") || !obj.get("value").isJsonArray()) return Collections.emptyList();
+        JsonArray arr = obj.getAsJsonArray("value");
+        List<Map<String, String>> batch = new ArrayList<>(arr.size());
+        for (int i = 0; i < arr.size(); i++) {
+            JsonElement el = arr.get(i);
+            if (!el.isJsonObject()) continue;
+            JsonObject row = el.getAsJsonObject();
+            Map<String, String> map = new LinkedHashMap<>();
+            for (String field : fields) {
+                JsonElement v = row.get(field);
+                String s = "";
+                if (v != null && !v.isJsonNull()) {
+                    s = v.isJsonPrimitive() ? v.getAsString() : v.toString();
+                }
+                map.put(field, s);
+            }
+            batch.add(map);
+        }
+        return batch;
+    }
+
     private int getPageSize() {
-        // Parse page size from the Prefer header (odata.maxpagesize=N)
+        // Explicit per-job override wins
+        if (config.getPageSizeOverride() > 0) {
+            return config.getPageSizeOverride();
+        }
+        // Otherwise parse from the Prefer header (odata.maxpagesize=N)
         String prefer = config.getPreferHeader();
         if (prefer != null) {
             for (String part : prefer.split(",")) {

@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S/4HANA Generic Extractor</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<!-- App Bar -->
+<header class="appbar">
+  <div class="appbar-left">
+    <div class="logo-mark" aria-hidden="true">S4</div>
+    <div class="appbar-title">
+      <div class="app-name">S/4HANA Generic Extractor</div>
+      <div class="app-sub">OData v2 / v4 &middot; Full &amp; Delta extraction</div>
+    </div>
+  </div>
+  <div class="appbar-right">
+    <span class="env-badge" title="Environment">DEV</span>
+    <span id="connStatus" class="conn-status conn-unknown" title="Backend connection">
+      <span class="conn-dot"></span><span id="connStatusText">checking…</span>
+    </span>
+  </div>
+</header>
+
+<!-- Sub bar / breadcrumb -->
+<div class="subbar">
+  <nav class="crumbs"><span>Home</span><span class="crumb-sep">/</span><span class="crumb-current">Extraction Workspace</span></nav>
+  <div class="subbar-meta"><span id="serviceMeta"></span></div>
+</div>
+
+<main class="container">
+
+  <!-- KPI Tiles -->
+  <section class="kpi-row" aria-label="Job statistics">
+    <div class="kpi-tile">
+      <div class="kpi-label">Total Jobs</div>
+      <div class="kpi-value" id="kpiTotal">&mdash;</div>
+      <div class="kpi-foot">All-time</div>
+    </div>
+    <div class="kpi-tile kpi-running">
+      <div class="kpi-label">Running</div>
+      <div class="kpi-value" id="kpiRunning">&mdash;</div>
+      <div class="kpi-foot">Active now</div>
+    </div>
+    <div class="kpi-tile kpi-completed">
+      <div class="kpi-label">Completed</div>
+      <div class="kpi-value" id="kpiCompleted">&mdash;</div>
+      <div class="kpi-foot">Successful</div>
+    </div>
+    <div class="kpi-tile kpi-failed">
+      <div class="kpi-label">Failed</div>
+      <div class="kpi-value" id="kpiFailed">&mdash;</div>
+      <div class="kpi-foot">Errors</div>
+    </div>
+  </section>
+
+  <!-- Tabs -->
+  <div class="tabs" role="tablist">
+    <button class="tab tab-active" role="tab" data-tab="extract">Extract</button>
+    <button class="tab" role="tab" data-tab="history">Job History</button>
+  </div>
+
+  <!-- Extract Panel -->
+  <section id="panel-extract" class="panel panel-active">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>Entity Sets</h2>
+          <p class="card-sub">Pick a service, choose a mode per entity, then run the extraction.</p>
+        </div>
+        <button class="btn btn-secondary" onclick="loadEntities()" title="Reload entity sets">
+          <span class="ico">&#x21bb;</span> Refresh
+        </button>
+      </div>
+
+      <div class="form-grid">
+        <div class="field field-grow">
+          <label for="serviceSelect">Service</label>
+          <select id="serviceSelect" onchange="loadEntities()"></select>
+        </div>
+        <div class="field">
+          <label for="formatSelect">Output Format</label>
+          <select id="formatSelect">
+            <option value="csv" selected>CSV</option>
+            <option value="json">JSON</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="parallelInput" title="Number of parallel workers (Full without Delta only)">Parallel Workers</label>
+          <input id="parallelInput" type="number" min="1" max="32" value="3">
+        </div>
+        <div class="field">
+          <label for="pageSizeInput" title="$top page size (Full without Delta only). Default 5000">Page Size ($top)</label>
+          <input id="pageSizeInput" type="number" min="1" max="100000" value="5000">
+        </div>
+      </div>
+
+      <div class="filter-bar">
+        <div class="search-wrap">
+          <span class="search-icon" aria-hidden="true">&#x1F50D;</span>
+          <input id="entitySearch" type="search" placeholder="Search entity sets…" oninput="onEntitySearch()">
+        </div>
+        <span id="entityCount" class="muted-meta"></span>
+      </div>
+
+      <div id="entityTable" class="data-area">
+        <div class="empty-state">Click <strong>Refresh</strong> to load available entity sets from the server</div>
+      </div>
+
+      <div id="deltaArea" class="delta-area"></div>
+    </div>
+  </section>
+
+  <!-- History Panel -->
+  <section id="panel-history" class="panel">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>Job History</h2>
+          <p class="card-sub">Persisted record of all extraction runs. Click <em>View Logs</em> for per-job details.</p>
+        </div>
+        <button class="btn btn-secondary" onclick="loadHistory()" title="Reload job history">
+          <span class="ico">&#x21bb;</span> Refresh
+        </button>
+      </div>
+
+      <div class="filter-bar">
+        <div class="search-wrap search-wide">
+          <span class="search-icon" aria-hidden="true">&#x1F50D;</span>
+          <input id="historySearch" type="search" placeholder="Search by job id, entity, mode, state, error…" oninput="onHistorySearch()">
+        </div>
+      </div>
+
+      <div id="historyArea" class="data-area">
+        <div class="empty-state">Click <strong>Refresh</strong> to load history</div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="appfoot">
+  <span>&copy; S/4HANA Generic Extractor</span>
+  <span class="dot-sep">&middot;</span>
+  <span>Java 17 &middot; OData v2/v4</span>
+</footer>
+
+<!-- Toast container -->
+<div id="toasts" class="toasts" aria-live="polite" aria-atomic="true"></div>
+
+<!-- Job Logs Modal -->
+<div id="logsModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="logsModalTitle" style="display:none">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title-wrap">
+        <h2 id="logsModalTitle">Job Logs</h2>
+        <label class="auto-toggle">
+          <input id="logAuto" type="checkbox" checked onchange="toggleAutoLogs()">
+          <span>Auto-refresh while running</span>
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary btn-sm" onclick="fetchLogs(false)"><span class="ico">&#x21bb;</span> Refresh</button>
+        <button class="btn btn-ghost btn-sm" onclick="closeLogsModal()" aria-label="Close">&times;</button>
+      </div>
+    </div>
+    <div id="logArea" class="modal-body">
+      <div class="empty-state">No logs yet</div>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

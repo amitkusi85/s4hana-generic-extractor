@@ -18,3 +18,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local temp / scratch
+_err_tail.txt
+logs_tmp.txt

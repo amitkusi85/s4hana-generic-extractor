@@ -2,7 +2,13 @@ package com.example.config;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Properties;
+import java.util.Set;
 
 public class ExtractorConfig {
 
@@ -15,10 +21,27 @@ public class ExtractorConfig {
     private final String entitySet;
     private final String extractionMode;
     private final int parallelCalls;
+    private final int pageSizeOverride; // 0 means “use Prefer header”
+    private final List<String> servicePaths;
 
     public ExtractorConfig(String baseUrl, String user, String password, String client,
                            String preferHeader, String servicePath, String entitySet,
                            String extractionMode, int parallelCalls) {
+        this(baseUrl, user, password, client, preferHeader, servicePath, entitySet,
+                extractionMode, parallelCalls, 0, null);
+    }
+
+    public ExtractorConfig(String baseUrl, String user, String password, String client,
+                           String preferHeader, String servicePath, String entitySet,
+                           String extractionMode, int parallelCalls, int pageSizeOverride) {
+        this(baseUrl, user, password, client, preferHeader, servicePath, entitySet,
+                extractionMode, parallelCalls, pageSizeOverride, null);
+    }
+
+    public ExtractorConfig(String baseUrl, String user, String password, String client,
+                           String preferHeader, String servicePath, String entitySet,
+                           String extractionMode, int parallelCalls, int pageSizeOverride,
+                           List<String> servicePaths) {
         this.baseUrl = baseUrl;
         this.user = user;
         this.password = password;
@@ -28,6 +51,16 @@ public class ExtractorConfig {
         this.entitySet = entitySet;
         this.extractionMode = extractionMode;
         this.parallelCalls = parallelCalls;
+        this.pageSizeOverride = pageSizeOverride;
+        // Build the public list, ensuring the primary servicePath is present and order-preserving.
+        Set<String> all = new LinkedHashSet<>();
+        if (servicePath != null && !servicePath.isBlank()) all.add(servicePath);
+        if (servicePaths != null) {
+            for (String p : servicePaths) {
+                if (p != null && !p.isBlank()) all.add(p);
+            }
+        }
+        this.servicePaths = Collections.unmodifiableList(new ArrayList<>(all));
     }
 
     public static ExtractorConfig fromProperties() {
@@ -51,6 +84,11 @@ public class ExtractorConfig {
                     + "'. Must be 'full', 'delta', or 'full_no_delta'.");
         }
 
+        String pathsCsv = props.getProperty("s4hana.service.paths", "");
+        List<String> servicePaths = pathsCsv.isBlank()
+                ? Collections.emptyList()
+                : Arrays.stream(pathsCsv.split(",")).map(String::trim).filter(s -> !s.isEmpty()).toList();
+
         return new ExtractorConfig(
                 props.getProperty("s4hana.url"),
                 props.getProperty("s4hana.user"),
@@ -60,7 +98,9 @@ public class ExtractorConfig {
                 props.getProperty("s4hana.service.path"),
                 props.getProperty("s4hana.entity.set"),
                 extractionMode,
-                Integer.parseInt(props.getProperty("s4hana.parallel.calls", "5"))
+                Integer.parseInt(props.getProperty("s4hana.parallel.calls", "5")),
+                0,
+                servicePaths
         );
     }
 
@@ -80,12 +120,39 @@ public class ExtractorConfig {
         return preferHeader;
     }
     public String getServicePath()    { return servicePath; }
+    /** Returns the full list of available service paths (primary first). */
+    public List<String> getServicePaths() { return servicePaths; }
+    /** Returns true when the configured service path is OData v4 (heuristic: contains "/odata4/"). */
+    public boolean isV4() {
+        return servicePath != null && servicePath.toLowerCase().contains("/odata4/");
+    }
     public String getEntitySet()      { return entitySet; }
     public String getExtractionMode() { return extractionMode; }
     public boolean isDeltaLoad()      { return "delta".equalsIgnoreCase(extractionMode); }
     public boolean isFullNoDelta()    { return "full_no_delta".equalsIgnoreCase(extractionMode); }
     public boolean isDeltaSaveEnabled() { return !isFullNoDelta(); }
     public int getParallelCalls()     { return parallelCalls; }
+    /** Returns user-supplied page size override, or 0 to fall back to the Prefer header value. */
+    public int getPageSizeOverride()  { return pageSizeOverride; }
+
+    /**
+     * Returns a new config with the given entity set, extraction mode, parallel calls, and page-size override.
+     */
+    public ExtractorConfig withOverrides(String entitySet, String extractionMode, int parallelCalls, int pageSizeOverride) {
+        return new ExtractorConfig(
+                this.baseUrl, this.user, this.password, this.client,
+                this.preferHeader, this.servicePath, entitySet, extractionMode,
+                parallelCalls, pageSizeOverride, this.servicePaths);
+    }
+
+    /** Returns a new config with a different service path (entity sets and other settings preserved). */
+    public ExtractorConfig withServicePath(String newServicePath) {
+        if (newServicePath == null || newServicePath.isBlank()) return this;
+        return new ExtractorConfig(
+                this.baseUrl, this.user, this.password, this.client,
+                this.preferHeader, newServicePath, this.entitySet, this.extractionMode,
+                this.parallelCalls, this.pageSizeOverride, this.servicePaths);
+    }
 
     /**
      * Returns a new config with the given entity set and extraction mode,
@@ -96,5 +163,16 @@ public class ExtractorConfig {
                 this.baseUrl, this.user, this.password, this.client,
                 this.preferHeader, this.servicePath, entitySet, extractionMode,
                 this.parallelCalls);
+    }
+
+    /**
+     * Returns a new config with the given entity set, extraction mode, and parallel calls override,
+     * keeping all other settings from this instance.
+     */
+    public ExtractorConfig withOverrides(String entitySet, String extractionMode, int parallelCalls) {
+        return new ExtractorConfig(
+                this.baseUrl, this.user, this.password, this.client,
+                this.preferHeader, this.servicePath, entitySet, extractionMode,
+                parallelCalls);
     }
 }
